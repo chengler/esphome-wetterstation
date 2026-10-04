@@ -1,7 +1,13 @@
 substitutions:
-  # Heiz-Automatik SHT45
-  heat_rh_min: "95"           # Feuchte-Schwelle in %RH, ab der geheizt wird (Startwert, anpassen)
-  heat_pause_ms: "300000"     # Mindestabstand zwischen zwei Heizpulsen in ms (5 min)
+  # Heiz-Automatik SHT45, zweistufig (Startwerte, im Betrieb anpassen)
+  # Stufe niedrig: Creep vorbeugen (Datenblatt 2.3: Drift bei längerer Zeit > 80 %RH)
+  heat_rh_low: "80"            # Feuchte-Schwelle in %RH
+  heat_pause_low_ms: "900000"  # Mindestabstand zwischen Heizpulsen in ms (15 min)
+  heat_cmd_low: "0x2F"         # Heizbefehl 110 mW, ca. 1 s
+  # Stufe hoch: Kondenswasser entfernen (Nebel, Tau)
+  heat_rh_high: "95"           # Feuchte-Schwelle in %RH
+  heat_pause_high_ms: "300000" # Mindestabstand zwischen Heizpulsen in ms (5 min)
+  heat_cmd_high: "0x39"        # Heizbefehl 200 mW, ca. 1 s
 
 # Verbindung zum WLAN
 wifi:
@@ -41,7 +47,7 @@ esphome:
   project:
     name: "cen.esphome-wetterstation"
     version: "20261004"
-  comment: "https://github-todo"
+  comment: "https://github.com/chengler/esphome-wetterstation"
 
 # https://esphome.io/components/esp32.html
 esp32:
@@ -77,12 +83,12 @@ i2c:
   scl: GPIO40
   scan: true                   # listet gefundene Adressen beim Boot im Log
 
-# Zeitpunkt des letzten Heizpulses (für Mindestabstand)
+# Zeitpunkt des letzten Heizpulses (für Mindestabstand, gilt für beide Stufen)
 globals:
   - id: last_heat_ms
     type: uint32_t
     restore_value: no
-    initial_value: '0'        # nach Boot wird frühestens nach heat_pause_ms geheizt
+    initial_value: '0'        # nach Boot wird frühestens nach der jeweiligen Pause geheizt
 
 # Zweiter Zugriff auf den SHT45 (gleiche Adresse), nur um den Heizbefehl selbst zu senden
 # Doku: https://esphome.io/components/i2c_device/
@@ -105,17 +111,27 @@ sensor:
       accuracy_decimals: 1     # 1 Nachkommastelle (Default 2), Genauigkeit ±1 %RH
       # 1a) Heiz-Automatik: läuft direkt nach jeder Feuchtemessung
       #     → bis zur nächsten Messung (60 s) bleibt Abkühlzeit
+      #     zweistufig: ab heat_rh_low schwach/selten, ab heat_rh_high stark/öfter
       on_value:
         then:
           - lambda: |-
               // x = gerade gemessene Feuchte in %RH
-              if (x < ${heat_rh_min}) return;                       // unter Schwelle: nichts tun
+              uint32_t pause;                                        // Mindestabstand der gewählten Stufe
+              uint8_t cmd;                                           // Heizbefehl der gewählten Stufe
+              if (x >= ${heat_rh_high}) {                            // Stufe hoch: Kondenswasser
+                pause = ${heat_pause_high_ms};
+                cmd = ${heat_cmd_high};
+              } else if (x >= ${heat_rh_low}) {                      // Stufe niedrig: Creep
+                pause = ${heat_pause_low_ms};
+                cmd = ${heat_cmd_low};
+              } else {
+                return;                                              // unter beiden Schwellen: nichts tun
+              }
               uint32_t now = millis();
-              if (now - id(last_heat_ms) < ${heat_pause_ms}) return; // Mindestabstand noch nicht erreicht
-              const uint8_t cmd = 0x39;                              // Heizer 200 mW, ca. 1 s (Stufen siehe README)
+              if (now - id(last_heat_ms) < pause) return;            // Mindestabstand noch nicht erreicht
               if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {   // 1 Byte Befehl senden
                 id(last_heat_ms) = now;                              // Zeitpunkt merken
-                ESP_LOGI("sht45_heater", "Heizpuls bei %.1f %%RH", x);
+                ESP_LOGI("sht45_heater", "Heizpuls 0x%02X bei %.1f %%RH", cmd, x);
               }
     temperature:
       name: "SHT45 Temperature"

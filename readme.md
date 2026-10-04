@@ -1,4 +1,4 @@
-# Wetter Nord – ESPHome-Außensensor
+# README esphome-wetterstation
 
 Außensensor für Temperatur, Luftfeuchte und Luftdruck auf Basis ESPHome.
 
@@ -67,26 +67,35 @@ ungenauer und ohne Heizer:
 ## Heiz-Automatik (SHT45)
 
 ESPHome kann den Heizer nicht zur Laufzeit schalten, daher eigene Lösung
-(`firmware.yaml`, Abschnitt 1a):
+(`firmware.yaml`, Abschnitt 1a). Nach jeder Feuchtemessung wird geprüft, ob
+geheizt wird – zweistufig:
 
-* Nach jeder Feuchtemessung gilt: Ist die Feuchte ≥ 95 %RH (`heat_rh_min`) und der letzte Heizpuls ≥ 5 min her (`heat_pause_ms`), folgt ein Heizpuls von 200 mW für ca. 1 s (`cmd = 0x39`).
-  Schwelle, Pause und Heizstufe sind Startwerte (nicht aus dem Datenblatt) und werden anhand des TMP117-Vergleichs noch angepasst.
+|Stufe|Zweck|Schwelle|Mindestabstand|Heizpuls|
+|-|-|-|-|-|
+|niedrig|Creep vorbeugen|≥ 80 %RH (`heat_rh_low`)|15 min (`heat_pause_low_ms`)|110 mW, ca. 1 s (`heat_cmd_low` = `0x2F`)|
+|hoch|Kondenswasser entfernen|≥ 95 %RH (`heat_rh_high`)|5 min (`heat_pause_high_ms`)|200 mW, ca. 1 s (`heat_cmd_high` = `0x39`)|
+
+* 80 %RH ist die Obergrenze des empfohlenen Bereichs (Datenblatt SHT4x 2.3).
+  Alle übrigen Werte sind Startwerte (nicht aus dem Datenblatt) und werden
+  anhand des TMP117-Vergleichs noch angepasst.
 * Heizen direkt nach der Messung → bis zur nächsten Messung (60 s) Abkühlzeit.
-* Damit liegt der Duty Cycle bei max. ca. 0,33 % – die Obergrenze laut Datenblatt liegt bei 10 %. Die Heizhäufigkeit könnte also noch deutlich erhöht werden.
-* Jeder Heizpuls erscheint im Log (`sht45_heater`).
+* Duty Cycle max. ca. 0,33 % (Stufe hoch) bzw. 0,11 % (Stufe niedrig) – die
+  Obergrenze laut Datenblatt liegt bei 10 %.
+* Jeder Heizpuls erscheint im Log (`sht45_heater`) mit Befehl und Feuchte.
 
-Verfügbare Heizstufen (Datenblatt SHT4x Tabelle 7), Wert für `cmd` im Lambda:
+Verfügbare Heizstufen (Datenblatt SHT4x Tabelle 7), einstellbar in den
+`substitutions`:
 
 |Leistung|1 s|0,1 s|
 |-|-|-|
-|200 mW|`0x39` (aktuell)|`0x32`|
-|110 mW|`0x2F`|`0x24`|
+|200 mW|`0x39` (Stufe hoch)|`0x32`|
+|110 mW|`0x2F` (Stufe niedrig)|`0x24`|
 |20 mW|`0x1E`|`0x15`|
 
-200 mW ist die höchste Stufe: meiste Wärme pro Puls, Kondenswasser wird am
-zuverlässigsten in einem Puls entfernt. Nachteil: stärkere Verfälschung danach,
-mehr thermischer Stress, Stromspitze bis ca. 75 mA. Reicht im Betrieb 110 mW
-(`0x2F`), ist das die schonendere Wahl.
+200 mW bringt die meiste Wärme pro Puls – Kondenswasser wird am zuverlässigsten
+entfernt. Nachteil: stärkere Verfälschung danach, mehr thermischer Stress,
+Stromspitze bis ca. 75 mA. Deshalb nur bei sehr hoher Feuchte; gegen Creep
+sollte reicht die schonendere Stufe reichen.
 
 ## MQTT-Topics
 
