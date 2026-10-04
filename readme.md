@@ -3,7 +3,7 @@
 Außensensor für Temperatur, Luftfeuchte und Luftdruck auf Basis ESPHome.
 
 > Ziel: Heizgradtage, Vorhersage der Vereisung von Luft-Wasser-Wärmepumpen und
-> Wetterdaten in Amateurstations-Qualität per MQTT.
+> Wetterdaten in Amateurstations-Qualität per MQTT via WLan.
 
 ## Hardware
 
@@ -95,7 +95,7 @@ Verfügbare Heizstufen (Datenblatt SHT4x Tabelle 7), einstellbar in den
 200 mW bringt die meiste Wärme pro Puls – Kondenswasser wird am zuverlässigsten
 entfernt. Nachteil: stärkere Verfälschung danach, mehr thermischer Stress,
 Stromspitze bis ca. 75 mA. Deshalb nur bei sehr hoher Feuchte; gegen Creep
-sollte reicht die schonendere Stufe reichen.
+sollte die schonendere Stufe reichen.
 
 ## MQTT-Topics
 
