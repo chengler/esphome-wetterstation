@@ -1,0 +1,150 @@
+substitutions:
+  # Heiz-Automatik SHT45
+  heat_rh_min: "95"           # Feuchte-Schwelle in %RH, ab der geheizt wird (Startwert, anpassen)
+  heat_pause_ms: "300000"     # Mindestabstand zwischen zwei Heizpulsen in ms (5 min)
+
+# Verbindung zum WLAN
+wifi:
+  use_address: wetter-nord.internal   # Hostname für OTA-Updates (mdns ist aus, daher nötig)
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_psk
+
+  # Stromsparmodus WLAN:
+  # NONE   geringste Einsparung, stabilste Verbindung
+  # LIGHT  Mittelweg (Default ESP32)
+  # HIGH   größte Einsparung, laut Doku häufigere Verbindungsabbrüche
+  power_save_mode: LIGHT
+
+  # Fallback-Hotspot, falls die WLAN-Verbindung fehlschlägt
+  # https://esphome.io/components/wifi.html#access-point-mode
+  ap:
+    ssid: "wetter-nord-fallback"
+    password: !secret fallback_psk
+
+mdns:
+  disabled: true
+
+mqtt:
+  broker: venus.internal
+  discovery: false             # keine Home-Assistant-Discovery-Topics (kein HA im Einsatz)
+  topic_prefix: wetter/nord
+  log_topic: null              # keine Logs per MQTT (Logs über Web-UI)
+
+#### Grundkonfiguration abgeschlossen :) ####
+
+# https://esphome.io/components/esphome.html
+esphome:
+  # Name: nur Kleinbuchstaben, Ziffern, Bindestrich
+  name: "wetter-nord"                 # = DHCP-Hostname, nach Funktion statt Chip benannt
+  friendly_name: "Wetter Nordseite"
+  project:
+    name: "cen.esphome-wetterstation"
+    version: "20261004"
+  comment: "https://github-todo"
+
+# https://esphome.io/components/esp32.html
+esp32:
+  board: esp32-s2-saola-1      # generisches ESP32-S2-Board, passt für QT Py ESP32-S2 (4 MB Flash)
+  variant: esp32s2
+
+# Logging aktivieren
+# https://esphome.io/components/logger.html
+logger:
+  level: DEBUG
+  logs:
+    sensor: INFO
+
+# Web-Oberfläche (HTTP) aktivieren
+web_server:
+  port: 80
+  # Version 3: Web-Components, interaktivere Oberfläche
+  version: 3
+
+# Updates über WLAN (OTA) erlauben
+# https://esphome.io/components/ota.html
+ota:
+  - platform: esphome
+
+# I2C-Bus aktivieren
+# https://esphome.io/components/i2c.html
+# QT Py ESP32-S2: STEMMA-QT-Buchse = zweiter I2C-Bus SDA1/SCL1
+# STEMMA-QT-Pins der QT-Py-Boards (bei Board-Wechsel anpassen):
+#   QT Py ESP32-S2 oder S3     SDA1 = GPIO41, SCL1 = GPIO40
+#   QT Py ESP32 Pico           SDA1 = GPIO22, SCL1 = GPIO19
+i2c:
+  sda: GPIO41
+  scl: GPIO40
+  scan: true                   # listet gefundene Adressen beim Boot im Log
+
+# Zeitpunkt des letzten Heizpulses (für Mindestabstand)
+globals:
+  - id: last_heat_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'        # nach Boot wird frühestens nach heat_pause_ms geheizt
+
+# Zweiter Zugriff auf den SHT45 (gleiche Adresse), nur um den Heizbefehl selbst zu senden
+# Doku: https://esphome.io/components/i2c_device/
+i2c_device:
+  id: sht45_raw
+  address: 0x44
+
+sensor:
+  # 1) SHT45 – Feuchte + Temperatur
+  # Doku: https://esphome.io/components/sensor/sht4x/
+  # I2C-Adresse: 0x44 (SHT45-AD1B, Default)
+  - platform: sht4x
+    id: sht45
+    address: 0x44
+    precision: High            # Default High
+    heater_max_duty: 0.0       # MUSS 0 bleiben: Heizen übernimmt die Automatik unten
+    update_interval: 60s
+    humidity:
+      name: "Humidity"
+      accuracy_decimals: 1     # 1 Nachkommastelle (Default 2), Genauigkeit ±1 %RH
+      # 1a) Heiz-Automatik: läuft direkt nach jeder Feuchtemessung
+      #     → bis zur nächsten Messung (60 s) bleibt Abkühlzeit
+      on_value:
+        then:
+          - lambda: |-
+              // x = gerade gemessene Feuchte in %RH
+              if (x < ${heat_rh_min}) return;                       // unter Schwelle: nichts tun
+              uint32_t now = millis();
+              if (now - id(last_heat_ms) < ${heat_pause_ms}) return; // Mindestabstand noch nicht erreicht
+              const uint8_t cmd = 0x39;                              // Heizer 200 mW, ca. 1 s (Stufen siehe README)
+              if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {   // 1 Byte Befehl senden
+                id(last_heat_ms) = now;                              // Zeitpunkt merken
+                ESP_LOGI("sht45_heater", "Heizpuls bei %.1f %%RH", x);
+              }
+    temperature:
+      name: "SHT45 Temperature"
+
+  # 2) DPS310 – Luftdruck + Temperatur
+  # Doku: https://esphome.io/components/sensor/dps310/
+  # I2C-Adresse: 0x77 (Default) | 0x76
+  - platform: dps310
+    id: dps310_baro            # "dps310" ist als ID verboten (= Integrationsname)
+    address: 0x77
+    update_interval: 60s
+    pressure:
+      name: "Pressure"
+      accuracy_decimals: 2     # 2 Nachkommastellen (Default 1), relative Genauigkeit ±0,06 hPa
+    temperature:
+      name: "DPS310 Temperature"
+
+  # 3) TMP117 – Präzisions-Temperatur (Referenzwert für Außentemperatur)
+  # Doku: https://esphome.io/components/sensor/tmp117/
+  # I2C-Adresse: 0x48 (Default, ADDR an GND) | 0x49 (VCC) | 0x4A (SDA) | 0x4B (SCL)
+  # Werkskalibrierung NIST-rückführbar; Mittelung setzt ESPHome automatisch (s. update_interval)
+  - platform: tmp117
+    id: tmp117_temp
+    address: 0x48              # optional, nur nötig wenn ≠ Default
+    name: "Temperature"
+    accuracy_decimals: 2       # 2 Nachkommastellen (Default 1), Chip-Auflösung 0,0078 °C
+    update_interval: 60s       # Default 60s; ESPHome setzt danach die max. Mittelung im Sensor
+    # Offset-Korrektur in °C, wird auf jeden Messwert addiert
+    # 0.0 = keine Korrektur; erst nach Vergleich mit Referenz (DWD/geeichtes Thermometer) ändern
+    # Beispiel: misst 0,15 °C zu hoch → offset: -0.15
+    filters:
+      - offset: 0.0
