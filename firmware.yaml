@@ -8,6 +8,8 @@ substitutions:
   heat_rh_high: "95"           # Feuchte-Schwelle in %RH
   heat_pause_high_ms: "300000" # Mindestabstand zwischen Heizpulsen in ms (5 min)
   heat_cmd_high: "0x39"        # Heizbefehl 200 mW, ca. 1 s
+  # MQTT-Heizbefehl (Abschnitt 1b)
+  heat_pause_mqtt_ms: "120000" # Sperrzeit nach einem Heizpuls für MQTT-Befehle in ms (2 min, Startwert)
 
 # Verbindung zum WLAN
 wifi:
@@ -32,10 +34,65 @@ mdns:
   disabled: true
 
 mqtt:
+  id: mqtt_client              # nötig, um aus dem Lambda zu publizieren
   broker: venus.internal
   discovery: false             # keine Home-Assistant-Discovery-Topics (kein HA im Einsatz)
   topic_prefix: wetter/nord
   log_topic: null              # keine Logs per MQTT (Logs über Web-UI)
+
+  # 1b) Heizbefehl per MQTT (manuell, z.B. für Tests aus Node-RED)
+  #     Befehl:   wetter/nord/sht45/heater/set    {"power":"high","time":"long"}
+  #               power: low | med | high, time: short | long, retain: false senden!
+  #     Antwort:  wetter/nord/sht45/heater/state  {"cmd":"0x39","power":"high","time":"long",
+  #                                                "mw":200,"ms":1000,"source":"mqtt","result":"ok"}
+  #               result: ok | invalid | locked | i2c_error
+  on_json_message:
+    - topic: wetter/nord/sht45/heater/set
+      qos: 0
+      then:
+        - lambda: |-
+            // x = empfangene JSON-Payload
+            std::string power = x["power"] | "";    // fehlt das Feld: leerer String
+            std::string dur   = x["time"]  | "";    // "dur" statt "time" (Namenskonflikt mit time())
+
+            // Befehl aus Leistung und Dauer bestimmen (Datenblatt Tabelle 7)
+            uint8_t cmd = 0;                        // 0 = ungültige Kombination
+            uint16_t mw = 0, ms = 0;                // physikalische Werte für die Antwort
+            bool lng = (dur == "long");
+            if (dur == "long" || dur == "short") {
+              ms = lng ? 1000 : 100;
+              if (power == "high")     { mw = 200; cmd = lng ? 0x39 : 0x32; }
+              else if (power == "med") { mw = 110; cmd = lng ? 0x2F : 0x24; }
+              else if (power == "low") { mw = 20;  cmd = lng ? 0x1E : 0x15; }
+            }
+
+            // Prüfen und senden
+            std::string result;
+            uint32_t now = millis();
+            if (cmd == 0) {
+              result = "invalid";                   // unbekannte Leistung oder Dauer
+            } else if (id(last_heat_ms) != 0 && now - id(last_heat_ms) < ${heat_pause_mqtt_ms}) {
+              result = "locked";                    // Sperrzeit nach letztem Puls (auch Automatik 1a)
+            } else if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {
+              id(last_heat_ms) = now;               // gemeinsame Zeitmarke mit der Automatik 1a
+              result = "ok";
+              ESP_LOGI("sht45_heater", "Heizpuls 0x%02X per MQTT", cmd);
+            } else {
+              result = "i2c_error";                 // Sensor hat den Befehl nicht angenommen
+            }
+
+            // Rückmeldung publizieren (nicht retained)
+            char hex[5];
+            snprintf(hex, sizeof(hex), "0x%02X", cmd);
+            id(mqtt_client).publish_json("wetter/nord/sht45/heater/state", [=](JsonObject root) {
+              root["cmd"] = hex;
+              root["power"] = power;
+              root["time"] = dur;
+              root["mw"] = mw;
+              root["ms"] = ms;
+              root["source"] = "mqtt";
+              root["result"] = result;
+            });
 
 #### Grundkonfiguration abgeschlossen :) ####
 
@@ -100,6 +157,8 @@ sensor:
   # 1) SHT45 – Feuchte + Temperatur
   # Doku: https://esphome.io/components/sensor/sht4x/
   # I2C-Adresse: 0x44 (SHT45-AD1B, Default)
+  # 1a) Heiz-Automatik: unten bei humidity/on_value
+  # 1b) Heizbefehl per MQTT: im mqtt-Block (on_json_message muss dort stehen)
   - platform: sht4x
     id: sht45
     address: 0x44

@@ -97,6 +97,40 @@ entfernt. Nachteil: stärkere Verfälschung danach, mehr thermischer Stress,
 Stromspitze bis ca. 75 mA. Deshalb nur bei sehr hoher Feuchte; gegen Creep
 sollte die schonendere Stufe reichen.
 
+### Manueller Heizpuls per MQTT
+
+Zusätzlich zur Automatik lässt sich ein einzelner Heizpuls per MQTT auslösen,
+z.B. für Tests aus Node-RED (`firmware.yaml`, Abschnitt 1b).
+
+Befehl an `wetter/nord/sht45/heater/set` (**retain: false**, sonst heizt das
+Gerät nach jedem Reconnect erneut):
+
+    {"power":"high","time":"long"}
+
+|Feld|Werte|Bedeutung|
+|-|-|-|
+|`power`|`low` / `med` / `high`|20 / 110 / 200 mW|
+|`time`|`short` / `long`|ca. 0,1 / ca. 1 s|
+
+Antwort auf `wetter/nord/sht45/heater/state`:
+
+    {"cmd":"0x39","power":"high","time":"long","mw":200,"ms":1000,"source":"mqtt","result":"ok"}
+
+|`result`|Bedeutung|
+|-|-|
+|`ok`|Heizpuls gesendet|
+|`invalid`|unbekannte Leistung oder Dauer – nichts gesendet|
+|`locked`|Sperrzeit nach letztem Puls läuft noch (`heat_pause_mqtt_ms`, 2 min)|
+|`i2c_error`|Sensor hat den Befehl nicht angenommen|
+
+* Automatik und MQTT teilen sich die Zeitmarke des letzten Pulses: Ein
+  MQTT-Puls verschiebt die Automatik, ein Automatik-Puls sperrt MQTT.
+  Direkt nach dem Boot ist MQTT sofort erlaubt.
+* Fällt ein manueller Puls in die reguläre Messung, schlägt diese einmal fehl
+  (Warnung im Log).
+* Die Werte von SHT45 (Temperatur und Feuchte) sind nach einem Puls kurz
+  verfälscht – anhand des State-Topics lassen sie sich zeitlich zuordnen.
+
 ## MQTT-Topics
 
 Broker: `venus.internal`, Präfix: `wetter/nord`
@@ -109,6 +143,8 @@ Broker: `venus.internal`, Präfix: `wetter/nord`
 | `wetter/nord/sensor/sht45_temperature/state`  | SHT45  | °C      | Plausibilisierung   |
 | `wetter/nord/sensor/dps310_temperature/state` | DPS310 | °C      | intern/Kompensation |
 | `wetter/nord/status`                          | –      | –       | online / offline    |
+| `wetter/nord/sht45/heater/set`                | SHT45  | JSON    | Befehl Heizpuls (empfangen) |
+| `wetter/nord/sht45/heater/state`              | SHT45  | JSON    | Rückmeldung Heizpuls |
 
 ## Inbetriebnahme
 
