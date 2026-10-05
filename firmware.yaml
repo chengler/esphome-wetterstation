@@ -9,8 +9,7 @@ substitutions:
   heat_pause_high_ms: "300000" # Mindestabstand zwischen Heizpulsen in ms (5 min)
   heat_cmd_high: "0x39"        # Heizbefehl 200 mW, ca. 1 s
   # MQTT-Heizbefehl (Abschnitt 1b)
-  heat_pause_mqtt_ms: "120000" # Sperrzeit nach einem Heizpuls für MQTT-Befehle in ms (2 min, Startwert)
-
+  heat_pause_mqtt_ms: "50000"  # Sperrzeit nach einem Heizpuls für MQTT-Befehle in ms (50 sec, Startwert)
 # Verbindung zum WLAN
 wifi:
   use_address: wetter-nord.internal   # Hostname für OTA-Updates (mdns ist aus, daher nötig)
