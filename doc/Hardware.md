@@ -34,12 +34,19 @@ Erstes Flashen: BOOT halten, RESET drücken, BOOT loslassen → Bootloader-Modus
 
 |Parameter|Wert|
 |-|-|
-|Genauigkeit Feuchte|±1,0 %RH|
-|Genauigkeit Temperatur|±0,1 °C|
+|Genauigkeit Feuchte|±1,0 %RH typ.|
+|Genauigkeit Temperatur 5…60 °C|±0,1 °C typ. (max. ±0,3 °C)|
+|Genauigkeit Temperatur 0 °C|≈ ±0,12 °C typ. (max. ±0,3 °C)|
+|Genauigkeit Temperatur −5 °C|≈ ±0,13 °C typ. (max. ±0,3 °C)|
+|Genauigkeit Temperatur −20 °C|≈ ±0,18 °C typ. (max. ±0,3 °C)|
 |Betriebsbereich|0…100 %RH, −40…125 °C|
 |Versorgung|1,08…3,6 V|
 |I2C-Adresse (SHT45-AD1B)|0x44|
-|Besonderheiten|voll funktionsfähig bei Kondensation, Heizer schaltbar, PTFE-Membran|
+|Board|Adafruit 5665 (ohne PTFE-Membran)|
+|Besonderheiten|voll funktionsfähig bei Kondensation, Heizer schaltbar|
+
+Werte 0 / −5 / −20 °C aus Datenblatt Fig. 13 abgelesen (zwischen −25 °C und 5 °C linear interpoliert).
+Typische Werte (typ.) sind nicht garantiert; garantiert ist nur der Maximalwert (max.).
 
 ## TMP117 – Temperatur (Texas Instruments)
 
@@ -49,8 +56,6 @@ Erstes Flashen: BOOT halten, RESET drücken, BOOT loslassen → Bootloader-Modus
 |Parameter|Wert|
 |-|-|
 |Genauigkeit −20…50 °C|±0,1 °C|
-|Genauigkeit −40…70 °C|±0,15 °C|
-|Genauigkeit −40…100 °C|±0,2 °C|
 |Auflösung|0,0078 °C (16 Bit)|
 |Betriebsbereich|−55…150 °C|
 |Versorgung|1,7…5,5 V|
