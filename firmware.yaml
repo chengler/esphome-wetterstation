@@ -4,10 +4,14 @@ substitutions:
   heat_rh_low: "80"            # Feuchte-Schwelle in %RH
   heat_pause_low_ms: "900000"  # Mindestabstand zwischen Heizpulsen in ms (15 min)
   heat_cmd_low: "0x2F"         # Heizbefehl 110 mW, ca. 1 s
+  heat_mw_low: "110"           # Leistung zu heat_cmd_low in mW (muss zum Befehl passen)
+  heat_ms_low: "1000"          # Dauer zu heat_cmd_low in ms (muss zum Befehl passen)
   # Stufe hoch: Kondenswasser entfernen (Nebel, Tau)
   heat_rh_high: "95"           # Feuchte-Schwelle in %RH
   heat_pause_high_ms: "300000" # Mindestabstand zwischen Heizpulsen in ms (5 min)
   heat_cmd_high: "0x39"        # Heizbefehl 200 mW, ca. 1 s
+  heat_mw_high: "200"          # Leistung zu heat_cmd_high in mW (muss zum Befehl passen)
+  heat_ms_high: "1000"         # Dauer zu heat_cmd_high in ms (muss zum Befehl passen)
   # MQTT-Heizbefehl (Abschnitt 1b)
   heat_pause_mqtt_ms: "50000"  # Sperrzeit nach einem Heizpuls für MQTT-Befehle in ms (50 sec, Startwert)
 # Verbindung zum WLAN
@@ -45,6 +49,8 @@ mqtt:
   #     Antwort:  wetter/nord/sht45/heater/state  {"cmd":"0x39","power":"high","time":"long",
   #                                                "mw":200,"ms":1000,"source":"mqtt","result":"ok"}
   #               result: ok | invalid | locked | i2c_error
+  #     Ereignis: wetter/nord/sht45/heater/event  {"mw":200,"ms":1000,"source":"mqtt"}
+  #               nur bei tatsächlichem Heizpuls (result ok), gleiches Topic wie Automatik 1a
   on_json_message:
     - topic: wetter/nord/sht45/heater/set
       qos: 0
@@ -76,6 +82,7 @@ mqtt:
               id(last_heat_ms) = now;               // gemeinsame Zeitmarke mit der Automatik 1a
               result = "ok";
               ESP_LOGI("sht45_heater", "Heizpuls 0x%02X per MQTT", cmd);
+              id(heat_event).execute(mw, ms, std::string("mqtt"));   // NEU 1.1: Heizereignis melden
             } else {
               result = "i2c_error";                 // Sensor hat den Befehl nicht angenommen
             }
@@ -102,7 +109,7 @@ esphome:
   friendly_name: "Wetter Nordseite"
   project:
     name: "cen.esphome-wetterstation"
-    version: "1.0"
+    version: "1.1"                    # 1.1: Heizereignis-Topic .../sht45/heater/event
   comment: "https://github.com/chengler/esphome-wetterstation"
   # Beim Start Version und Build einmalig publizieren
   on_boot:
@@ -176,6 +183,26 @@ globals:
     restore_value: no
     initial_value: '0'        # nach Boot wird frühestens nach der jeweiligen Pause geheizt
 
+# NEU 1.1: Heizereignis melden (gemeinsam für Automatik 1a und MQTT-Befehl 1b)
+# Topic:   wetter/nord/sht45/heater/event (nicht retained)
+# Payload: {"mw":200,"ms":1000,"source":"auto"|"mqtt"}
+#          mw = Heizleistung, ms = Heizdauer, Energie = mw * ms (in µJ)
+# Doku: https://esphome.io/components/script/
+script:
+  - id: heat_event
+    parameters:
+      mw: int
+      ms: int
+      source: string
+    then:
+      - mqtt.publish_json:
+          topic: wetter/nord/sht45/heater/event
+          retain: false
+          payload: |-
+            root["mw"] = mw;
+            root["ms"] = ms;
+            root["source"] = source;
+
 # Zweiter Zugriff auf den SHT45 (gleiche Adresse), nur um den Heizbefehl selbst zu senden
 # Doku: https://esphome.io/components/i2c_device/
 i2c_device:
@@ -202,18 +229,24 @@ sensor:
       # 1a) Heiz-Automatik: läuft direkt nach jeder Feuchtemessung
       #     → bis zur nächsten Messung (60 s) bleibt Abkühlzeit
       #     zweistufig: ab heat_rh_low schwach/selten, ab heat_rh_high stark/öfter
+      #     1.1: jeder Heizpuls wird auf .../sht45/heater/event gemeldet (source "auto")
       on_value:
         then:
           - lambda: |-
               // x = gerade gemessene Feuchte in %RH
               uint32_t pause;                                        // Mindestabstand der gewählten Stufe
               uint8_t cmd;                                           // Heizbefehl der gewählten Stufe
+              int mw, ms;                                            // NEU 1.1: Werte für die Ereignismeldung
               if (x >= ${heat_rh_high}) {                            // Stufe hoch: Kondenswasser
                 pause = ${heat_pause_high_ms};
                 cmd = ${heat_cmd_high};
+                mw = ${heat_mw_high};
+                ms = ${heat_ms_high};
               } else if (x >= ${heat_rh_low}) {                      // Stufe niedrig: Creep
                 pause = ${heat_pause_low_ms};
                 cmd = ${heat_cmd_low};
+                mw = ${heat_mw_low};
+                ms = ${heat_ms_low};
               } else {
                 return;                                              // unter beiden Schwellen: nichts tun
               }
@@ -222,6 +255,7 @@ sensor:
               if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {   // 1 Byte Befehl senden
                 id(last_heat_ms) = now;                              // Zeitpunkt merken
                 ESP_LOGI("sht45_heater", "Heizpuls 0x%02X bei %.1f %%RH", cmd, x);
+                id(heat_event).execute(mw, ms, std::string("auto")); // NEU 1.1: Heizereignis melden
               }
     temperature:
       name: "SHT45 Temperature"
