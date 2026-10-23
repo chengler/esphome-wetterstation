@@ -102,8 +102,32 @@ esphome:
   friendly_name: "Wetter Nordseite"
   project:
     name: "cen.esphome-wetterstation"
-    version: "20261004"
+    version: "1.0"
   comment: "https://github.com/chengler/esphome-wetterstation"
+  # Beim Start Version und Build einmalig publizieren
+  on_boot:
+    - lambda: |-
+        // Projekt-Version aus esphome/project/version
+        id(fw_version).publish_state(ESPHOME_PROJECT_VERSION);
+        // Zeitpunkt des Kompilierens, z.B. "Oct 23 2026 17:20:00"
+        id(fw_build).publish_state(__DATE__ " " __TIME__);
+# Firmware-Info auf MQTT-Ebene von status (wetter/nord/version, wetter/nord/build)
+text_sensor:
+  # 1) Version
+  - platform: template
+    id: fw_version
+    name: "Version"
+    update_interval: never                # Wert kommt nur aus on_boot
+    entity_category: diagnostic           # Web-UI: Gruppe Diagnostic
+    state_topic: wetter/nord/version      # eigener Topic statt .../text_sensor/.../state
+  # 2) Build
+  - platform: template
+    id: fw_build
+    name: "Build"
+    update_interval: never
+    entity_category: diagnostic
+    state_topic: wetter/nord/build
+
 
 # https://esphome.io/components/esp32.html
 esp32:
@@ -167,6 +191,8 @@ sensor:
     humidity:
       name: "Humidity"
       accuracy_decimals: 1     # 1 Nachkommastelle (Default 2), Genauigkeit ±1 %RH
+      web_server:
+        sorting_weight: 20 
       # 1a) Heiz-Automatik: läuft direkt nach jeder Feuchtemessung
       #     → bis zur nächsten Messung (60 s) bleibt Abkühlzeit
       #     zweistufig: ab heat_rh_low schwach/selten, ab heat_rh_high stark/öfter
@@ -193,6 +219,8 @@ sensor:
               }
     temperature:
       name: "SHT45 Temperature"
+      entity_category: diagnostic # kennzeichnet ihn als Nebenwert (die Web-UI gruppiert ihn dann getrennt).
+      # internal: true unterdrückt Web-UI und MQTT, der Wert bleibt nur intern im ESP.
 
   # 2) DPS310 – Luftdruck + Temperatur
   # Doku: https://esphome.io/components/sensor/dps310/
@@ -204,8 +232,12 @@ sensor:
     pressure:
       name: "Pressure"
       accuracy_decimals: 2     # 2 Nachkommastellen (Default 1), relative Genauigkeit ±0,06 hPa
+      web_server:
+        sorting_weight: 30    # zuletzt: Druck
     temperature:
       name: "DPS310 Temperature"
+      entity_category: diagnostic # kennzeichnet ihn als Nebenwert (die Web-UI gruppiert ihn dann getrennt).
+      # internal: true unterdrückt Web-UI und MQTT, der Wert bleibt nur intern im ESP.
 
   # 3) TMP117 – Präzisions-Temperatur (Referenzwert für Außentemperatur)
   # Doku: https://esphome.io/components/sensor/tmp117/
@@ -215,6 +247,10 @@ sensor:
     id: tmp117_temp
     address: 0x48              # optional, nur nötig wenn ≠ Default
     name: "Temperature"
+    web_server:
+      sorting_weight: 10      # oben: Hauptwert
+    device_class: temperature   # Web-UI wählt das Thermometer-Symbol über die Geräteklasse
+    icon: "mdi:thermometer"     # Fallback: Symbol explizit setzen, falls die Klasse allein nicht reicht
     accuracy_decimals: 2       # 2 Nachkommastellen (Default 1), Chip-Auflösung 0,0078 °C
     update_interval: 60s       # Default 60s; ESPHome setzt danach die max. Mittelung im Sensor
     # Offset-Korrektur in °C, wird auf jeden Messwert addiert
