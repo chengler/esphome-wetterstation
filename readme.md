@@ -171,4 +171,6 @@ Broker: `venus.internal`, Präfix: `wetter/nord`
 
 ## Status
 
-Firmware kompiliert, Hardware bestellt.
+läuft
+
+![screenshot](./doc/Screenshot-web.png)
