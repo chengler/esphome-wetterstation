@@ -119,6 +119,9 @@ text_sensor:
     name: "Version"
     update_interval: never                # Wert kommt nur aus on_boot
     entity_category: diagnostic           # Web-UI: Gruppe Diagnostic
+    icon: "mdi:tag"                       # Etikett-Symbol für die Version
+    web_server:
+      sorting_weight: 10                  # ganz oben in Diagnostic  
     state_topic: wetter/nord/version      # eigener Topic statt .../text_sensor/.../state
   # 2) Build
   - platform: template
@@ -126,6 +129,9 @@ text_sensor:
     name: "Build"
     update_interval: never
     entity_category: diagnostic
+    icon: "mdi:calendar-clock"       # Kalender mit Uhr für den Build-Zeitpunkt
+    web_server:
+      sorting_weight: 20    
     state_topic: wetter/nord/build
 
 
@@ -221,6 +227,9 @@ sensor:
       name: "SHT45 Temperature"
       entity_category: diagnostic # kennzeichnet ihn als Nebenwert (die Web-UI gruppiert ihn dann getrennt).
       # internal: true unterdrückt Web-UI und MQTT, der Wert bleibt nur intern im ESP.
+      web_server:
+        sorting_weight: 30
+      icon: "mdi:water-percent"    # Tropfen-Symbol, Temperatur Feuchtesensor      
 
   # 2) DPS310 – Luftdruck + Temperatur
   # Doku: https://esphome.io/components/sensor/dps310/
@@ -237,6 +246,9 @@ sensor:
     temperature:
       name: "DPS310 Temperature"
       entity_category: diagnostic # kennzeichnet ihn als Nebenwert (die Web-UI gruppiert ihn dann getrennt).
+      web_server:
+        sorting_weight: 40
+      icon: "mdi:gauge"            # Manometer-Symbol, Temperatur vom Drucksensor
       # internal: true unterdrückt Web-UI und MQTT, der Wert bleibt nur intern im ESP.
 
   # 3) TMP117 – Präzisions-Temperatur (Referenzwert für Außentemperatur)
