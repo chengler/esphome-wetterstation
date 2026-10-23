@@ -16,7 +16,7 @@ Außensensor für Temperatur, Luftfeuchte und Luftdruck auf Basis ESPHome.
 |TFA Dostmann 98.1114.02|Schutzhülle|
 
 Alle Sensoren per STEMMA QT (I2C) verkettet, keine Lötarbeiten.
-Details und Datenblätter: siehe \doc\Hardware.md.
+Details und Datenblätter: siehe [Hardware.md](./doc/Hardware.md).
 
 ## Warum drei Sensoren?
 
