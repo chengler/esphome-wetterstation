@@ -1,16 +1,21 @@
 substitutions:
+  # Firmware-Version (wird in esphome/project/version übernommen)
+  fw_version: "1.3"            # 1.3: Heizen zeitgesteuert per SNTP (30 s nach :00/:15/:30/:45)
   # Heiz-Automatik SHT45, zweistufig (Startwerte, im Betrieb anpassen)
+  # Geheizt wird nur in 15-min-Slots, jeweils 30 s nach :00/:15/:30/:45 (time-Block, 1a)
+  # heat_slots_*: in jedem wievielten Slot geheizt wird (1 = jeder Slot = 15 min, 2 = 30 min)
   # Stufe niedrig: Creep vorbeugen (Datenblatt 2.3: Drift bei längerer Zeit > 80 %RH)
   heat_rh_low: "80"            # Feuchte-Schwelle in %RH
-  heat_pause_low_ms: "900000"  # Mindestabstand zwischen Heizpulsen in ms (15 min)
+  heat_slots_low: "2"          # jeder 2. Slot (30 min)
   heat_cmd_low: "0x2F"         # Heizbefehl 110 mW, ca. 1 s
   heat_mw_low: "110"           # Leistung zu heat_cmd_low in mW (muss zum Befehl passen)
   heat_ms_low: "1000"          # Dauer zu heat_cmd_low in ms (muss zum Befehl passen)
   # Stufe hoch: Kondenswasser entfernen (Nebel, Tau)
+  # 1.2: schwächer (vorher 0x39 / 200 mW) – Feuchte sackte nach jedem Puls 2–3 %RH ab
   heat_rh_high: "95"           # Feuchte-Schwelle in %RH
-  heat_pause_high_ms: "300000" # Mindestabstand zwischen Heizpulsen in ms (5 min)
-  heat_cmd_high: "0x39"        # Heizbefehl 200 mW, ca. 1 s
-  heat_mw_high: "200"          # Leistung zu heat_cmd_high in mW (muss zum Befehl passen)
+  heat_slots_high: "1"         # jeder Slot (15 min)
+  heat_cmd_high: "0x2F"        # Heizbefehl 110 mW, ca. 1 s
+  heat_mw_high: "110"          # Leistung zu heat_cmd_high in mW (muss zum Befehl passen)
   heat_ms_high: "1000"         # Dauer zu heat_cmd_high in ms (muss zum Befehl passen)
   # MQTT-Heizbefehl (Abschnitt 1b)
   heat_pause_mqtt_ms: "50000"  # Sperrzeit nach einem Heizpuls für MQTT-Befehle in ms (50 sec, Startwert)
@@ -109,7 +114,7 @@ esphome:
   friendly_name: "Wetter Nordseite"
   project:
     name: "cen.esphome-wetterstation"
-    version: "1.1"                    # 1.1: Heizereignis-Topic .../sht45/heater/event
+    version: "${fw_version}"          # Version zentral oben in den substitutions pflegen
   comment: "https://github.com/chengler/esphome-wetterstation"
   # Beim Start Version und Build einmalig publizieren
   on_boot:
@@ -176,12 +181,12 @@ i2c:
   scl: GPIO40
   scan: true                   # listet gefundene Adressen beim Boot im Log
 
-# Zeitpunkt des letzten Heizpulses (für Mindestabstand, gilt für beide Stufen)
+# Zeitpunkt des letzten Heizpulses (für die Sperrzeit der MQTT-Befehle 1b, gilt für Automatik und MQTT)
 globals:
   - id: last_heat_ms
     type: uint32_t
     restore_value: no
-    initial_value: '0'        # nach Boot wird frühestens nach der jeweiligen Pause geheizt
+    initial_value: '0'        # 0 = seit Boot noch nicht geheizt
 
 # NEU 1.1: Heizereignis melden (gemeinsam für Automatik 1a und MQTT-Befehl 1b)
 # Topic:   wetter/nord/sht45/heater/event (nicht retained)
@@ -203,6 +208,57 @@ script:
             root["ms"] = ms;
             root["source"] = source;
 
+# NEU 1.3: Uhrzeit per SNTP aus dem eigenen Netz
+# Doku: https://esphome.io/components/time/sntp/
+# Zeitgesteuerte Auslöser (on_time) feuern nur mit gültiger Uhrzeit.
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Berlin
+    servers:
+      - !secret ntp_server     # Zeitserver im eigenen Netz, steht in secrets.yaml
+    on_time:
+      # 1a) Heiz-Automatik (ab 1.3 zeitgesteuert statt nach Mindestpause)
+      #     läuft 30 s nach :00/:15/:30/:45 → kurz nach dem 15-min-Snapshot in Node-RED,
+      #     bis zum nächsten Snapshot bleiben fast 15 min zum Erholen der Feuchte
+      #     zweistufig: ab heat_rh_low schwach/selten, ab heat_rh_high öfter
+      #     jeder Heizpuls wird auf .../sht45/heater/event gemeldet (source "auto")
+      - seconds: 30
+        minutes: /15
+        then:
+          - lambda: |-
+              // 1) letzte gemessene Feuchte des SHT45 holen
+              float rh = id(sht45_hum).state;
+              if (isnan(rh)) return;                                 // seit Boot noch keine Messung
+
+              // 2) Slot-Nummer des Tages (0..95), ein Slot = 15 min
+              auto t = id(sntp_time).now();
+              int slot = (t.hour * 60 + t.minute) / 15;
+
+              // 3) Stufe nach Feuchte wählen, nur in passenden Slots heizen
+              uint8_t cmd;                                           // Heizbefehl der gewählten Stufe
+              int mw, ms;                                            // Werte für die Ereignismeldung
+              if (rh >= ${heat_rh_high}) {                           // Stufe hoch: Kondenswasser
+                if (slot % ${heat_slots_high} != 0) return;
+                cmd = ${heat_cmd_high};
+                mw = ${heat_mw_high};
+                ms = ${heat_ms_high};
+              } else if (rh >= ${heat_rh_low}) {                     // Stufe niedrig: Creep
+                if (slot % ${heat_slots_low} != 0) return;
+                cmd = ${heat_cmd_low};
+                mw = ${heat_mw_low};
+                ms = ${heat_ms_low};
+              } else {
+                return;                                              // unter beiden Schwellen: nichts tun
+              }
+
+              // 4) Heizbefehl senden (1 Byte), Zeitmarke setzen, Ereignis melden
+              if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {
+                id(last_heat_ms) = millis();                         // Sperrzeit für MQTT-Befehle 1b
+                ESP_LOGI("sht45_heater", "Heizpuls 0x%02X bei %.1f %%RH (Slot %d)", cmd, rh, slot);
+                id(heat_event).execute(mw, ms, std::string("auto"));
+              }
+
 # Zweiter Zugriff auf den SHT45 (gleiche Adresse), nur um den Heizbefehl selbst zu senden
 # Doku: https://esphome.io/components/i2c_device/
 i2c_device:
@@ -213,50 +269,20 @@ sensor:
   # 1) SHT45 – Feuchte + Temperatur
   # Doku: https://esphome.io/components/sensor/sht4x/
   # I2C-Adresse: 0x44 (SHT45-AD1B, Default)
-  # 1a) Heiz-Automatik: unten bei humidity/on_value
+  # 1a) Heiz-Automatik: im time-Block (on_time), ab 1.3 zeitgesteuert
   # 1b) Heizbefehl per MQTT: im mqtt-Block (on_json_message muss dort stehen)
   - platform: sht4x
     id: sht45
     address: 0x44
     precision: High            # Default High
-    heater_max_duty: 0.0       # MUSS 0 bleiben: Heizen übernimmt die Automatik unten
+    heater_max_duty: 0.0       # MUSS 0 bleiben: Heizen übernimmt die Automatik 1a
     update_interval: 60s
     humidity:
+      id: sht45_hum            # NEU 1.3: wird von der Heiz-Automatik 1a gelesen
       name: "Humidity"
       accuracy_decimals: 1     # 1 Nachkommastelle (Default 2), Genauigkeit ±1 %RH
       web_server:
         sorting_weight: 20 
-      # 1a) Heiz-Automatik: läuft direkt nach jeder Feuchtemessung
-      #     → bis zur nächsten Messung (60 s) bleibt Abkühlzeit
-      #     zweistufig: ab heat_rh_low schwach/selten, ab heat_rh_high stark/öfter
-      #     1.1: jeder Heizpuls wird auf .../sht45/heater/event gemeldet (source "auto")
-      on_value:
-        then:
-          - lambda: |-
-              // x = gerade gemessene Feuchte in %RH
-              uint32_t pause;                                        // Mindestabstand der gewählten Stufe
-              uint8_t cmd;                                           // Heizbefehl der gewählten Stufe
-              int mw, ms;                                            // NEU 1.1: Werte für die Ereignismeldung
-              if (x >= ${heat_rh_high}) {                            // Stufe hoch: Kondenswasser
-                pause = ${heat_pause_high_ms};
-                cmd = ${heat_cmd_high};
-                mw = ${heat_mw_high};
-                ms = ${heat_ms_high};
-              } else if (x >= ${heat_rh_low}) {                      // Stufe niedrig: Creep
-                pause = ${heat_pause_low_ms};
-                cmd = ${heat_cmd_low};
-                mw = ${heat_mw_low};
-                ms = ${heat_ms_low};
-              } else {
-                return;                                              // unter beiden Schwellen: nichts tun
-              }
-              uint32_t now = millis();
-              if (now - id(last_heat_ms) < pause) return;            // Mindestabstand noch nicht erreicht
-              if (id(sht45_raw).write(&cmd, 1) == i2c::ERROR_OK) {   // 1 Byte Befehl senden
-                id(last_heat_ms) = now;                              // Zeitpunkt merken
-                ESP_LOGI("sht45_heater", "Heizpuls 0x%02X bei %.1f %%RH", cmd, x);
-                id(heat_event).execute(mw, ms, std::string("auto")); // NEU 1.1: Heizereignis melden
-              }
     temperature:
       name: "SHT45 Temperature"
       entity_category: diagnostic # kennzeichnet ihn als Nebenwert (die Web-UI gruppiert ihn dann getrennt).
