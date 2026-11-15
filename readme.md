@@ -67,35 +67,39 @@ ungenauer und ohne Heizer:
 ## Heiz-Automatik (SHT45)
 
 ESPHome kann den Heizer nicht zur Laufzeit schalten, daher eigene Lösung
-(`firmware.yaml`, Abschnitt 1a). Nach jeder Feuchtemessung wird geprüft, ob
-geheizt wird – zweistufig:
+(`firmware.yaml`, Abschnitt 1a). Geheizt wird zeitgesteuert (SNTP) in
+15-min-Slots, jeweils 30 s nach :00/:15/:30/:45 – zweistufig nach der zuletzt
+gemessenen Feuchte:
 
-|Stufe|Zweck|Schwelle|Mindestabstand|Heizpuls|
+|Stufe|Zweck|Schwelle|Abstand|Heizpuls|
 |-|-|-|-|-|
-|niedrig|Creep vorbeugen|≥ 80 %RH (`heat_rh_low`)|15 min (`heat_pause_low_ms`)|110 mW, ca. 1 s (`heat_cmd_low` = `0x2F`)|
-|hoch|Kondenswasser entfernen|≥ 95 %RH (`heat_rh_high`)|5 min (`heat_pause_high_ms`)|200 mW, ca. 1 s (`heat_cmd_high` = `0x39`)|
+|niedrig|Creep vorbeugen|≥ 80 %RH (`heat_rh_low`)|jeder 2. Slot = 30 min (`heat_slots_low`)|110 mW, ca. 1 s (`heat_cmd_low` = `0x2F`)|
+|hoch|Kondenswasser entfernen|≥ 95 %RH (`heat_rh_high`)|jeder Slot = 15 min (`heat_slots_high`)|110 mW, ca. 1 s (`heat_cmd_high` = `0x2F`)|
 
 * 80 %RH ist die Obergrenze des empfohlenen Bereichs (Datenblatt SHT4x 2.3).
   Alle übrigen Werte sind Startwerte (nicht aus dem Datenblatt) und werden
   anhand des TMP117-Vergleichs noch angepasst.
-* Heizen direkt nach der Messung → bis zur nächsten Messung (60 s) Abkühlzeit.
-* Duty Cycle max. ca. 0,33 % (Stufe hoch) bzw. 0,11 % (Stufe niedrig) – die
+* Heizen 30 s nach dem 15-min-Raster → bis zum nächsten Raster-Zeitpunkt
+  bleiben fast 15 min zum Erholen der Feuchte.
+* Ohne gültige Uhrzeit (Zeitserver nicht erreichbar) wird nicht geheizt.
+* Duty Cycle max. ca. 0,11 % (Stufe hoch) bzw. 0,06 % (Stufe niedrig) – die
   Obergrenze laut Datenblatt liegt bei 10 %.
-* Jeder Heizpuls erscheint im Log (`sht45_heater`) mit Befehl und Feuchte.
+* Jeder Heizpuls erscheint im Log (`sht45_heater`) mit Befehl und Feuchte und
+  als Ereignis auf `wetter/nord/sht45/heater/event`.
 
 Verfügbare Heizstufen (Datenblatt SHT4x Tabelle 7), einstellbar in den
 `substitutions`:
 
 |Leistung|1 s|0,1 s|
 |-|-|-|
-|200 mW|`0x39` (Stufe hoch)|`0x32`|
-|110 mW|`0x2F` (Stufe niedrig)|`0x24`|
+|200 mW|`0x39`|`0x32`|
+|110 mW|`0x2F` (beide Stufen)|`0x24`|
 |20 mW|`0x1E`|`0x15`|
 
 200 mW bringt die meiste Wärme pro Puls – Kondenswasser wird am zuverlässigsten
 entfernt. Nachteil: stärkere Verfälschung danach, mehr thermischer Stress,
-Stromspitze bis ca. 75 mA. Deshalb nur bei sehr hoher Feuchte; gegen Creep
-sollte die schonendere Stufe reichen.
+Stromspitze bis ca. 75 mA. Seit Version 1.2 nutzen deshalb beide Stufen
+110 mW: nach 200-mW-Pulsen sackte die Feuchte jeweils um 2–3 %RH ab.
 
 ### Manueller Heizpuls per MQTT
 
@@ -120,11 +124,12 @@ Antwort auf `wetter/nord/sht45/heater/state`:
 |-|-|
 |`ok`|Heizpuls gesendet|
 |`invalid`|unbekannte Leistung oder Dauer – nichts gesendet|
-|`locked`|Sperrzeit nach letztem Puls läuft noch (`heat_pause_mqtt_ms`, 2 min)|
+|`locked`|Sperrzeit nach letztem Puls läuft noch (`heat_pause_mqtt_ms`, 50 s)|
 |`i2c_error`|Sensor hat den Befehl nicht angenommen|
 
 * Automatik und MQTT teilen sich die Zeitmarke des letzten Pulses: Ein
-  MQTT-Puls verschiebt die Automatik, ein Automatik-Puls sperrt MQTT.
+  Automatik-Puls sperrt MQTT für die Sperrzeit. Die Automatik selbst läuft
+  zeitgesteuert und wartet nicht auf MQTT-Pulse.
   Direkt nach dem Boot ist MQTT sofort erlaubt.
 * Fällt ein manueller Puls in die reguläre Messung, schlägt diese einmal fehl
   (Warnung im Log).
@@ -133,24 +138,33 @@ Antwort auf `wetter/nord/sht45/heater/state`:
 
 ## MQTT-Topics
 
-Broker: `venus.internal`, Präfix: `wetter/nord`
+Broker: `broker.internal`, Präfix: `wetter/nord`
 
 | Topic                                         | Sensor | Einheit | Bemerkung           |
 |-----------------------------------------------|--------|---------|---------------------|
 | `wetter/nord/sensor/temperature/state`        | TMP117 | °C      | Referenz            |
-| `wetter/nord/sensor/humidity/state`           | SHT45  | %RH     |                     |
-| `wetter/nord/sensor/pressure/state`           | DPS310 | hPa     | Stationsdruck       |
+| `wetter/nord/sensor/humidity/state`           | SHT45  | %RH     | begrenzt auf 0–100  |
+| `wetter/nord/sensor/dew_point/state`          | SHT45  | °C      | berechnet           |
+| `wetter/nord/sensor/pressure/state`           | DPS310 + TMP117 | hPa | auf Meereshöhe reduziert (`altitude_m`), bis 1.5 Stationsdruck |
+| `wetter/nord/sensor/pressure_raw/state`       | DPS310 | hPa     | Stationsdruck, Diagnose |
+| `wetter/nord/sensor/humidity_raw/state`       | SHT45  | %RH     | Rohwert, Diagnose   |
 | `wetter/nord/sensor/sht45_temperature/state`  | SHT45  | °C      | Plausibilisierung   |
 | `wetter/nord/sensor/dps310_temperature/state` | DPS310 | °C      | intern/Kompensation |
+| `wetter/nord/version`                         | –      | –       | Firmware-Version    |
+| `wetter/nord/build`                           | –      | –       | Zeitpunkt des Kompilierens |
 | `wetter/nord/status`                          | –      | –       | online / offline    |
 | `wetter/nord/sht45/heater/set`                | SHT45  | JSON    | Befehl Heizpuls (empfangen) |
 | `wetter/nord/sht45/heater/state`              | SHT45  | JSON    | Rückmeldung Heizpuls |
+| `wetter/nord/sht45/heater/event`              | SHT45  | JSON    | jeder Heizpuls (Automatik und MQTT) |
 
 ## Inbetriebnahme
 
-1. `secrets-todo.yaml` kopieren nach `secrets.yaml`, Werte eintragen.
+1. `secrets-todo.yaml` kopieren nach `secrets.yaml`, Werte eintragen
+   (WLAN, Zeitserver, `ota_password` für Updates über WLAN).
 2. In `firmware.yaml` anpassen:
    - `mqtt: broker:` – eigener MQTT-Broker
+   - `substitutions: altitude_m:` – Höhe des Sensors über NN in m
+     (für den Druck auf Meereshöhe)
    - `wifi: use_address:` – Hostname oder IP des ESP für OTA-Updates.\
      mDNS ist deaktiviert, der Name muss daher im eigenen DNS eingetragen sein.\
      Alternativ feste IP verwenden oder mDNS aktivieren (`mdns: disabled: false`,
@@ -162,7 +176,8 @@ Broker: `venus.internal`, Präfix: `wetter/nord`
 3. Prüfen: `esphome config firmware.yaml`
 4. Erstes Flashen per USB: BOOT halten, RESET drücken, BOOT loslassen, dann
    `esphome run firmware.yaml`
-5. Weitere Updates per OTA über die Adresse aus `wifi: use_address:`.
+5. Weitere Updates per OTA über die Adresse aus `wifi: use_address:`
+   (geschützt durch `ota_password`).
 6. Web-UI und Log im Browser öffnen:
    - mit DNS/fester IP: Adresse aus `wifi: use_address:`, z.B. `http://wetter-nord.internal`
    - mit mDNS: Wert aus `esphome: name:` plus `.local`, z.B. `http://wetter-nord.local`
